@@ -97,8 +97,7 @@ class PlayerProfile {
         for (let i = 0; i < mod.CountOf(allPlayers); i++) {
             const player = mod.ValueInArray(allPlayers, i);
             // Only count non-AI players who are ALIVE (deployed)
-            if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier) &&
-                mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+            if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
                 const playerTeam = mod.GetTeam(player);
                 const team1 = mod.GetTeam(1);
                 const team2 = mod.GetTeam(2);
@@ -144,8 +143,7 @@ class PlayerProfile {
                 for (let i = 0; i < mod.CountOf(currentPlayers); i++) {
                     const player = mod.ValueInArray(currentPlayers, i);
                     // Only count non-AI players who are ALIVE (deployed)
-                    if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier) &&
-                        mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+                    if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
                         const playerTeam = mod.GetTeam(player);
                         const team1 = mod.GetTeam(1);
                         const team2 = mod.GetTeam(2);
@@ -348,7 +346,7 @@ async function OngoingGlobal_Update_Score_and_Time_Action() {
      let RemainingTimeWidget = mod.FindUIWidgetWithName("RemainingTime");
      const timeRemaining = mod.GetMatchTimeRemaining();
      const timeString = MakeTimeFromSeconds(timeRemaining);
-     mod.SetUITextLabel(RemainingTimeWidget, mod.Message("{}", timeString));
+     mod.SetUITextLabel(RemainingTimeWidget, MakeMessage("{}", timeString));
      console.log("Timer updated: " + timeString + " (" + timeRemaining + " seconds remaining)");
    }
  }
@@ -402,8 +400,7 @@ function CheckAndUpdateWaitingState() {
   for (let i = 0; i < mod.CountOf(allPlayers); i++) {
     const player = mod.ValueInArray(allPlayers, i);
     // Only count non-AI players who are ALIVE (deployed)
-    if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier) &&
-        mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+    if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
       const playerTeam = mod.GetTeam(player);
       const team1 = mod.GetTeam(1);
       const team2 = mod.GetTeam(2);
@@ -421,11 +418,6 @@ function CheckAndUpdateWaitingState() {
   // Ensure all players have profiles and show them waiting UI
   for (let i = 0; i < mod.CountOf(allPlayers); i++) {
     const player = mod.ValueInArray(allPlayers, i);
-    
-    // Skip AI players
-    if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
-      continue;
-    }
     
     // Create profile if needed
     const playerProfile = PlayerProfile.Get(player);
@@ -476,10 +468,6 @@ async function OngoingGlobal_Monitor_Waiting_Phase_Action() {
       for (let i = 0; i < mod.CountOf(allPlayers); i++) {
         const player = mod.ValueInArray(allPlayers, i);
         
-        // Skip AI players
-        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
-          continue;
-        }
         
         // Restrict movement for alive players during waiting phase
         if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
@@ -523,9 +511,8 @@ async function OngoingGlobal_Check_Team_Elimination_Action() {
       for (let i = 0; i < mod.CountOf(allPlayers); i++) {
         const player = mod.ValueInArray(allPlayers, i);
         
-        // Only count non-AI players who are alive
-        if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier) &&
-            mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+        
+        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
           const playerTeam = mod.GetTeam(player);
           const team1 = mod.GetTeam(1);
           const team2 = mod.GetTeam(2);
@@ -649,7 +636,7 @@ async function OnPlayerDeploy_Restrict_Movement_Action(eventInfo: any) {
   if (gameStartDebounce) {
     console.log("Game already started - BLOCKING deployment for player: " + mod.GetObjId(eventInfo.eventPlayer));
     // Force player back to deployment screen
-    mod.KillPlayer(eventInfo.eventPlayer);
+    mod.EnablePlayerDeploy(eventInfo.eventPlayer, false);
     return;
   }
   
@@ -1119,7 +1106,7 @@ function SetScoreUI(player: mod.Player) {
  const revives = mod.GetVariable(mod.ObjectVariable(player, RevivesPlayerVar));
  
  // Set the scoreboard values for this player
- mod.SetScoreboardPlayerValues(player, score, captures, kills, deaths, assists, revives);
+ mod.SetScoreboardPlayerValues(player, score, captures, kills, deaths, assists);
 }
 function MakeKillDeathRatio(player: mod.Player) {
  return mod.Message("{0}/{1}", mod.GetPlayerKills(player),mod.GetPlayerDeaths(player))
