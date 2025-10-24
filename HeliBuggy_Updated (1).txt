@@ -1,0 +1,1041 @@
+import * as modlib from 'modlib';
+
+// ===== MATCH START CONFIGURATION =====
+let baseGameStartCountdown: number = 15; // Countdown duration in seconds
+let gameStartCountdown: number = 15;
+let gameStartDebounce: boolean = false; // Prevents countdown from restarting once game has started
+
+// ===== HELPER FUNCTIONS =====
+function FormatTime(sec: number): [number, number, number] {
+    const minutes = Math.floor(sec / 60);
+    const seconds = Math.floor(sec % 60);
+    const coolerSeconds = Math.floor((sec % 60) / 10);
+    return [minutes, coolerSeconds, seconds];
+}
+
+function RestrictPlayerMovement(player: mod.Player) {
+    // Restrict all player input during match waiting
+    mod.EnableAllInputRestrictions(player, true);
+}
+
+function MakeMessage(message: string, ...args: any[]) {
+    switch (args.length) {
+        case 0:
+            return mod.Message(message);
+        case 1:
+            return mod.Message(message, args[0]);
+        case 2:
+            return mod.Message(message, args[0], args[1]);
+        case 3:
+            return mod.Message(message, args[0], args[1], args[2]);
+        default:
+            throw new Error("Invalid number of arguments");
+    }
+}
+
+// ===== PLAYER PROFILE CLASS =====
+class PlayerProfile {
+    player: mod.Player;
+    playerHeaderWidget: mod.UIWidget;
+    playerSubHeaderWidget: mod.UIWidget;
+    
+    static playerInstances: mod.Player[] = [];
+    static deployedPlayers: mod.Player[] = [];
+    static whileLoopStarted: boolean = false;
+    static #allPlayerProfiles: { [key: number]: PlayerProfile } = {};
+
+    constructor(player: mod.Player) {
+        console.log("Creating PlayerProfile for player: " + mod.GetObjId(player));
+        this.player = player;
+        this.playerHeaderWidget = this.CreateHeaderUI();
+        this.playerSubHeaderWidget = this.CreateSubHeaderUI();
+        PlayerProfile.playerInstances.push(this.player);
+        console.log("PlayerProfile created. Total instances: " + PlayerProfile.playerInstances.length);
+    }
+
+    static Get(player: mod.Player): PlayerProfile | undefined {
+        if (mod.GetObjId(player) > -1) {
+            let index = mod.GetObjId(player);
+            let playerProfile = this.#allPlayerProfiles[index];
+
+            if (!playerProfile) {
+                console.log("PlayerProfile not found for player " + index + ", creating new one");
+                playerProfile = new PlayerProfile(player);
+                this.#allPlayerProfiles[index] = playerProfile;
+            } else {
+                console.log("PlayerProfile found for player " + index);
+            }
+            return playerProfile;
+        }
+        console.log("Invalid player ID, returning undefined");
+        return undefined;
+    }
+
+    static RemovePlayerFromDeployedPlayers(player: mod.Player) {
+        const index = this.deployedPlayers.findIndex(
+            (p) => mod.GetObjId(p) === mod.GetObjId(player)
+        );
+        if (index !== -1) {
+            this.deployedPlayers.splice(index, 1);
+        }
+    }
+
+    // ===== CORE COUNTDOWN LOGIC =====
+    static async UpdateGameStartCountdown() {
+        console.log("UpdateGameStartCountdown called. gameStartDebounce: " + gameStartDebounce + ", whileLoopStarted: " + this.whileLoopStarted);
+        
+        if (gameStartDebounce || this.whileLoopStarted) {
+            console.log("Returning early from UpdateGameStartCountdown");
+            return;
+        }
+
+        // Count players on Team 1 and Team 2
+        const allPlayers = mod.AllPlayers();
+        let team1Count = 0;
+        let team2Count = 0;
+        
+        for (let i = 0; i < mod.CountOf(allPlayers); i++) {
+            const player = mod.ValueInArray(allPlayers, i);
+            // Only count non-AI players
+            if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+                const playerTeam = mod.GetTeam(player);
+                const team1 = mod.GetTeam(1);
+                const team2 = mod.GetTeam(2);
+                
+                if (mod.Equals(playerTeam, team1)) {
+                    team1Count++;
+                } else if (mod.Equals(playerTeam, team2)) {
+                    team2Count++;
+                }
+            }
+        }
+
+        console.log("Team 1 players: " + team1Count + ", Team 2 players: " + team2Count);
+
+        // Start countdown only if at least 1 player is on each team
+        if (
+            team1Count >= 1 &&
+            team2Count >= 1 &&
+            !this.whileLoopStarted
+        ) {
+            console.log("Both teams have players, starting countdown");
+            this.whileLoopStarted = true;
+            
+            while (true) {
+                // Recount players on each team every iteration
+                const currentPlayers = mod.AllPlayers();
+                let currentTeam1Count = 0;
+                let currentTeam2Count = 0;
+                
+                for (let i = 0; i < mod.CountOf(currentPlayers); i++) {
+                    const player = mod.ValueInArray(currentPlayers, i);
+                    if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+                        const playerTeam = mod.GetTeam(player);
+                        const team1 = mod.GetTeam(1);
+                        const team2 = mod.GetTeam(2);
+                        
+                        if (mod.Equals(playerTeam, team1)) {
+                            currentTeam1Count++;
+                        } else if (mod.Equals(playerTeam, team2)) {
+                            currentTeam2Count++;
+                        }
+                    }
+                }
+                
+                // Update countdown display for all player instances
+                for (let i = 0; i < this.playerInstances.length; i++) {
+                    const element = this.playerInstances[i];
+                    const playerProfile = this.Get(element);
+                    if (playerProfile) {
+                        const formattedTime = FormatTime(gameStartCountdown);
+                        playerProfile.UpdateUI(
+                            playerProfile.playerHeaderWidget,
+                            MakeMessage("Match Starting In..."),
+                            true
+                        );
+                        playerProfile.UpdateUI(
+                            playerProfile.playerSubHeaderWidget,
+                            MakeMessage(
+                                "{}:{}{}",
+                                formattedTime[0],
+                                formattedTime[1],
+                                formattedTime[2]
+                            ),
+                            true
+                        );
+                    }
+                    
+                    // Release restrictions when countdown hits 0
+                    if (
+                        gameStartCountdown <= 0 &&
+                        mod.GetSoldierState(element, mod.SoldierStateBool.IsAlive)
+                    ) {
+                        mod.EnableAllInputRestrictions(element, false);
+                    }
+                }
+
+                // Reset countdown if either team has 0 players
+                if (currentTeam1Count < 1 || currentTeam2Count < 1) {
+                    console.log("Not enough players on both teams (Team 1: " + currentTeam1Count + ", Team 2: " + currentTeam2Count + "), resetting countdown");
+                    gameStartCountdown = baseGameStartCountdown;
+                    this.whileLoopStarted = false;
+                    break;
+                }
+
+                // Countdown complete - start the game!
+                if (gameStartCountdown <= 0 && !gameStartDebounce) {
+                    console.log("Countdown complete! Starting game...");
+                    gameStartDebounce = true;
+                    
+                    // Set game as ongoing and reset match timer to 5 minutes
+                    mod.SetVariable(GameOngoingGlobalVar, true);
+                    mod.SetGameModeTimeLimit(300);
+                    
+                    // Show GO message
+                    for (let i = 0; i < this.playerInstances.length; i++) {
+                        const element = this.playerInstances[i];
+                        const playerProfile = this.Get(element);
+                        if (playerProfile) {
+                            playerProfile.UpdateUI(
+                                playerProfile.playerHeaderWidget,
+                                MakeMessage("GO!"),
+                                true
+                            );
+                            playerProfile.UpdateUI(
+                                playerProfile.playerSubHeaderWidget,
+                                MakeMessage("Team 1 must reach the capture point!"),
+                                true
+                            );
+                        }
+                    }
+                    
+                    await mod.Wait(3);
+                    
+                    // Hide UI after game starts
+                    for (let i = 0; i < this.playerInstances.length; i++) {
+                        const element = this.playerInstances[i];
+                        const playerProfile = this.Get(element);
+                        if (playerProfile) {
+                            playerProfile.UpdateUI(playerProfile.playerHeaderWidget, undefined, false);
+                            playerProfile.UpdateUI(playerProfile.playerSubHeaderWidget, undefined, false);
+                        }
+                    }
+                    
+                    break;
+                }
+
+                await mod.Wait(1);
+                gameStartCountdown--;
+            }
+        } else {
+            // Not enough players on both teams - show waiting message
+            gameStartCountdown = baseGameStartCountdown;
+        }
+    }
+
+    CreateHeaderUI(): mod.UIWidget {
+        mod.AddUIText(
+            "PlayerHeader_" + mod.GetObjId(this.player),
+            mod.CreateVector(0, -200, 0),
+            mod.CreateVector(600, 50, 0),
+            mod.UIAnchor.Center,
+            MakeMessage("Waiting for Players...")
+        );
+        
+        const widget = mod.FindUIWidgetWithName("PlayerHeader_" + mod.GetObjId(this.player));
+        mod.SetUITextSize(widget, 32);
+        mod.SetUITextColor(widget, mod.CreateVector(1, 1, 1));
+        mod.SetUIWidgetBgColor(widget, mod.CreateVector(0, 0, 0));
+        mod.SetUIWidgetBgAlpha(widget, 0.7);
+        mod.SetUIWidgetBgFill(widget, mod.UIBgFill.Blur);
+        mod.SetUIWidgetDepth(widget, mod.UIDepth.AboveGameUI);
+        
+        return widget;
+    }
+
+    CreateSubHeaderUI(): mod.UIWidget {
+        mod.AddUIText(
+            "PlayerSubHeader_" + mod.GetObjId(this.player),
+            mod.CreateVector(0, -150, 0),
+            mod.CreateVector(400, 40, 0),
+            mod.UIAnchor.Center,
+            MakeMessage("")
+        );
+        
+        const widget = mod.FindUIWidgetWithName("PlayerSubHeader_" + mod.GetObjId(this.player));
+        mod.SetUITextSize(widget, 24);
+        mod.SetUITextColor(widget, mod.CreateVector(0.8, 0.8, 0.8));
+        mod.SetUIWidgetBgColor(widget, mod.CreateVector(0, 0, 0));
+        mod.SetUIWidgetBgAlpha(widget, 0.7);
+        mod.SetUIWidgetBgFill(widget, mod.UIBgFill.Blur);
+        mod.SetUIWidgetDepth(widget, mod.UIDepth.AboveGameUI);
+        
+        return widget;
+    }
+
+    UpdateUI(widget: mod.UIWidget, message: mod.Message | undefined, visible: boolean) {
+        if (message !== undefined) {
+            mod.SetUITextLabel(widget, message);
+        }
+        mod.SetUIWidgetVisible(widget, visible);
+    }
+
+    ShowLoadoutWarningUI(show: boolean) {
+        // Placeholder for loadout warning functionality
+    }
+}
+
+async function OnGameModeStarted_MapSetup_Action() {
+ await mod.Wait(1)
+ mod.SetVariable(EnemyTextColourGlobalVar,mod.CreateVector(1,0.157,0.157))
+ mod.SetVariable(EnemyBGColourGlobalVar,mod.CreateVector(0.176,0.125,0.125))
+ mod.SetVariable(FriendlyTextColourGlobalVar,mod.CreateVector(0,0.549,0.824))
+ mod.SetVariable(FriendlyBGColourGlobalVar,mod.CreateVector(0.125,0.176,0.18))
+ mod.SetVariable(GameOngoingGlobalVar,false)
+ EnemyTeam1_Setup()
+ FriendlyTeam2_Setup()
+ PlayerUI_Outline()
+ MainUI_ScoreandTime()
+ 
+ // Initialize match waiting state
+ console.log("Match starting - checking for players on both teams");
+ CheckAndUpdateWaitingState();
+}
+function OnGameModeStarted_MapSetup(conditionState: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnGameModeStarted_MapSetup_Action();
+}
+
+function OngoingGlobal_Update_Score_and_Time_Condition(): boolean {
+let newState = mod.GetVariable(GameOngoingGlobalVar);
+return newState;
+}
+async function OngoingGlobal_Update_Score_and_Time_Action() {
+ await mod.Wait(1)
+ let RemainingTimeWidget = mod.FindUIWidgetWithName("RemainingTime");
+ mod.SetUITextLabel(RemainingTimeWidget,mod.Message("{}",MakeTimeFromSeconds(mod.GetMatchTimeRemaining())))
+}
+function OngoingGlobal_Update_Score_and_Time(conditionState: any) {
+let newState = OngoingGlobal_Update_Score_and_Time_Condition();
+if (!conditionState.update(newState)) {
+ return;
+}
+OngoingGlobal_Update_Score_and_Time_Action();
+}
+
+function OngoingGlobal_Update_Score_and_Time1_Condition(): boolean {
+let newState = mod.GetVariable(GameOngoingGlobalVar);
+return newState;
+}
+async function OngoingGlobal_Update_Score_and_Time1_Action() {
+ await mod.Wait(1)
+ if (mod.GetMatchTimeRemaining() <= 0) {
+ mod.EndGameMode(mod.GetTeam(2))
+ }
+}
+function OngoingGlobal_Update_Score_and_Time1(conditionState: any) {
+let newState = OngoingGlobal_Update_Score_and_Time1_Condition();
+if (!conditionState.update(newState)) {
+ return;
+}
+OngoingGlobal_Update_Score_and_Time1_Action();
+}
+
+async function OngoingGlobal_Initialise_Action() {
+ ScoresUI()
+}
+function OngoingGlobal_Initialise(conditionState: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OngoingGlobal_Initialise_Action();
+}
+
+// Modified CheckAndUpdateWaitingState to check for Team 1 and Team 2 specifically
+function CheckAndUpdateWaitingState() {
+  console.log("CheckAndUpdateWaitingState called");
+  
+  // Get all current players and count by team
+  const allPlayers = mod.AllPlayers();
+  let team1Count = 0;
+  let team2Count = 0;
+  
+  for (let i = 0; i < mod.CountOf(allPlayers); i++) {
+    const player = mod.ValueInArray(allPlayers, i);
+    // Only count non-AI players
+    if (!mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+      const playerTeam = mod.GetTeam(player);
+      const team1 = mod.GetTeam(1);
+      const team2 = mod.GetTeam(2);
+      
+      if (mod.Equals(playerTeam, team1)) {
+        team1Count++;
+      } else if (mod.Equals(playerTeam, team2)) {
+        team2Count++;
+      }
+    }
+  }
+  
+  console.log("Team 1 players: " + team1Count + ", Team 2 players: " + team2Count);
+  
+  // Ensure all players have profiles and show them waiting UI
+  for (let i = 0; i < mod.CountOf(allPlayers); i++) {
+    const player = mod.ValueInArray(allPlayers, i);
+    
+    // Skip AI players
+    if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+      continue;
+    }
+    
+    // Create profile if needed
+    const playerProfile = PlayerProfile.Get(player);
+    
+    // Only show UI to alive players
+    if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+      console.log("Showing waiting UI to player: " + mod.GetObjId(player));
+      
+      if (playerProfile) {
+        playerProfile.UpdateUI(
+          playerProfile.playerHeaderWidget,
+          MakeMessage("Waiting for Players..."),
+          true
+        );
+        playerProfile.UpdateUI(
+          playerProfile.playerSubHeaderWidget,
+          MakeMessage(
+            "Team 1: {} | Team 2: {}",
+            team1Count,
+            team2Count
+          ),
+          true
+        );
+      }
+    }
+  }
+  
+  // Trigger countdown if both teams have at least 1 player
+  if (team1Count >= 1 && team2Count >= 1 && !gameStartDebounce) {
+    console.log("Both teams have players, triggering countdown");
+    PlayerProfile.UpdateGameStartCountdown();
+  }
+}
+
+// Ongoing check during waiting phase
+function OngoingGlobal_Monitor_Waiting_Phase_Condition(): boolean {
+  const newState = mod.Not(mod.GetVariable(GameOngoingGlobalVar));
+  return newState;
+}
+
+async function OngoingGlobal_Monitor_Waiting_Phase_Action() {
+  // Continuously run during waiting phase
+  while (true) {
+    // Only check if game hasn't started
+    if (!gameStartDebounce) {
+      // Get all alive players and restrict their movement
+      const allPlayers = mod.AllPlayers();
+      for (let i = 0; i < mod.CountOf(allPlayers); i++) {
+        const player = mod.ValueInArray(allPlayers, i);
+        
+        // Skip AI players
+        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+          continue;
+        }
+        
+        // Restrict movement for alive players during waiting phase
+        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+          mod.EnableAllInputRestrictions(player, true);
+        }
+      }
+      
+      // Check and update waiting state
+      CheckAndUpdateWaitingState();
+    }
+    
+    await mod.Wait(0.5);
+  }
+}
+
+function OngoingGlobal_Monitor_Waiting_Phase(conditionState: any) {
+  let newState = OngoingGlobal_Monitor_Waiting_Phase_Condition();
+  if (!conditionState.update(newState)) {
+    return;
+  }
+  OngoingGlobal_Monitor_Waiting_Phase_Action();
+}
+
+function OnPlayerEarnedKill_Ean_Kill_Action(eventInfo: any) {
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,ScorePlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(eventInfo.eventPlayer,ScorePlayerVar)),
+10))
+ SetScoreUI(eventInfo.eventPlayer)
+}
+function OnPlayerEarnedKill_Ean_Kill(conditionState: any, eventInfo: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnPlayerEarnedKill_Ean_Kill_Action(eventInfo);
+}
+
+function OnPlayerEarnedKillAssist_Kill_assist_Action(eventInfo: any) {
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,KillAssistsPlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(eventInfo.eventPlayer,KillAssistsPlayerVar)),
+1))
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,ScorePlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(eventInfo.eventPlayer,ScorePlayerVar)),
+3))
+ SetScoreUI(eventInfo.eventPlayer)
+}
+function OnPlayerEarnedKillAssist_Kill_assist(conditionState: any, eventInfo: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnPlayerEarnedKillAssist_Kill_assist_Action(eventInfo);
+}
+
+function OnRevived_Revive_Counter_Action(eventInfo: any) {
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventOtherPlayer,RevivesPlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(eventInfo.eventOtherPlayer,RevivesPlayerVar)),
+1))
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventOtherPlayer,ScorePlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(eventInfo.eventOtherPlayer,ScorePlayerVar)),
+3))
+ SetScoreUI(eventInfo.eventOtherPlayer)
+}
+function OnRevived_Revive_Counter(conditionState: any, eventInfo: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnRevived_Revive_Counter_Action(eventInfo);
+}
+
+async function OnPlayerJoinGame_Sets_Scoreboard_Action(eventInfo: any) {
+ await mod.Wait(0.3)
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,CapturesPlayerVar),0)
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,OnPointPlayerVar),0)
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,KillAssistsPlayerVar),0)
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,ScorePlayerVar),0)
+ mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer,RevivesPlayerVar),0)
+ SetScoreUI(eventInfo.eventPlayer)
+ ScoresUI()
+}
+function OnPlayerJoinGame_Sets_Scoreboard(conditionState: any, eventInfo: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnPlayerJoinGame_Sets_Scoreboard_Action(eventInfo);
+}
+
+async function OnPlayerUndeploy_Death_Update_Action(eventInfo: any) {
+ await mod.Wait(0.01)
+ SetScoreUI(eventInfo.eventPlayer)
+}
+function OnPlayerUndeploy_Death_Update(conditionState: any, eventInfo: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnPlayerUndeploy_Death_Update_Action(eventInfo);
+}
+
+async function OnPlayerDeploy_Restrict_Movement_Action(eventInfo: any) {
+  console.log("OnPlayerDeploy triggered for player: " + mod.GetObjId(eventInfo.eventPlayer));
+  
+  // Ensure player profile is created
+  PlayerProfile.Get(eventInfo.eventPlayer);
+  
+  // Wait a tiny bit to ensure player is fully deployed
+  await mod.Wait(0.1);
+  
+  // Enable or disable input restrictions based on game state
+  if (!gameStartDebounce) {
+    // Game hasn't started yet - restrict movement immediately and forcefully
+    console.log("Restricting movement for player: " + mod.GetObjId(eventInfo.eventPlayer));
+    mod.EnableAllInputRestrictions(eventInfo.eventPlayer, true);
+    
+    // Double-check restriction after a short delay to ensure it sticks
+    await mod.Wait(0.2);
+    mod.EnableAllInputRestrictions(eventInfo.eventPlayer, true);
+    
+    // Trigger the waiting state check to potentially start countdown
+    CheckAndUpdateWaitingState();
+  } else {
+    // Game has started - allow movement
+    console.log("Game already started, allowing movement for player: " + mod.GetObjId(eventInfo.eventPlayer));
+    mod.EnableAllInputRestrictions(eventInfo.eventPlayer, false);
+  }
+}
+
+function OnPlayerDeploy_Restrict_Movement(conditionState: any, eventInfo: any) {
+  console.log("OnPlayerDeploy_Restrict_Movement wrapper called for player: " + mod.GetObjId(eventInfo.eventPlayer));
+  let newState = true;
+  if (!conditionState.update(newState)) {
+    console.log("Condition state returned false, skipping action");
+    return;
+  }
+  console.log("Calling OnPlayerDeploy_Restrict_Movement_Action");
+  OnPlayerDeploy_Restrict_Movement_Action(eventInfo);
+}
+
+async function OnCapturePointCaptured_On_Capture_Action(eventInfo: any) {
+ await mod.Wait(0.2)
+ mod.SetVariable(PlayersOnObjectiveGlobalVar,mod.EmptyArray())
+ mod.SetVariable(PlayersOnObjectiveGlobalVar,modlib.FilteredArray(
+mod.GetPlayersOnPoint(eventInfo.eventCapturePoint),
+(currentArrayElement: any) => mod.Equals(
+mod.GetTeam(currentArrayElement),
+mod.GetCurrentOwnerTeam(eventInfo.eventCapturePoint))))
+ for (let iteratorVar = 0; iteratorVar < mod.CountOf(mod.GetVariable(PlayersOnObjectiveGlobalVar)); iteratorVar += 1) {
+mod.SetVariable(iteratorGlobalVar, iteratorVar);
+  ObjectiveCapturedPlayerData(mod.ValueInArray(mod.GetVariable(PlayersOnObjectiveGlobalVar),mod.GetVariable(iteratorGlobalVar)))
+ }
+ ObjectiveVehicleSpawn(eventInfo.eventCapturePoint)
+}
+function OnCapturePointCaptured_On_Capture(conditionState: any, eventInfo: any) {
+let newState = true;
+if (!conditionState.update(newState)) {
+ return;
+}
+OnCapturePointCaptured_On_Capture_Action(eventInfo);
+}
+
+// NEW: Check for Team 1 vehicle capture
+function OnPlayerEnterCapturePoint_Team1_Vehicle_Capture_Condition(eventInfo: any): boolean {
+  const newState = mod.And(
+    mod.Equals(mod.GetTeam(eventInfo.eventPlayer), mod.GetTeam(1)),
+    mod.Equals(mod.IsVehicleOccupied(mod.GetVehicleFromPlayer(eventInfo.eventPlayer)), true)
+  );
+  return newState;
+}
+
+async function OnPlayerEnterCapturePoint_Team1_Vehicle_Capture_Action(eventInfo: any) {
+  await mod.Wait(0.1);
+  
+  // Only proceed if game is ongoing to prevent accidental triggers during waiting phase
+  if (!mod.GetVariable(GameOngoingGlobalVar)) {
+    return;
+  }
+  
+  console.log("Team 1 player entered capture point in vehicle!");
+  
+  // Team 1 wins by capturing with vehicle
+  mod.EndGameMode(mod.GetTeam(1));
+}
+
+function OnPlayerEnterCapturePoint_Team1_Vehicle_Capture(conditionState: any, eventInfo: any) {
+  let newState = OnPlayerEnterCapturePoint_Team1_Vehicle_Capture_Condition(eventInfo);
+  if (!conditionState.update(newState)) {
+    return;
+  }
+  OnPlayerEnterCapturePoint_Team1_Vehicle_Capture_Action(eventInfo);
+}
+
+function OnPlayerEnterCapturePoint_CapturePoint_UI_Condition(eventInfo: any): boolean {
+  let newState = true;
+  return newState;
+}
+
+async function OnPlayerEnterCapturePoint_CapturePoint_UI_Action(eventInfo: any) {
+  await mod.Wait(0.1);
+  mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer, OnPointPlayerVar), 1);
+  SetScoreUI(eventInfo.eventPlayer);
+}
+
+function OnPlayerEnterCapturePoint_CapturePoint_UI(conditionState: any, eventInfo: any) {
+  let newState = OnPlayerEnterCapturePoint_CapturePoint_UI_Condition(eventInfo);
+  if (!conditionState.update(newState)) {
+    return;
+  }
+  OnPlayerEnterCapturePoint_CapturePoint_UI_Action(eventInfo);
+}
+
+function OnPlayerExitCapturePoint_Remove_CapturePoint_UI_Condition(eventInfo: any): boolean {
+  let newState = true;
+  return newState;
+}
+
+async function OnPlayerExitCapturePoint_Remove_CapturePoint_UI_Action(eventInfo: any) {
+  await mod.Wait(0.1);
+  mod.SetVariable(mod.ObjectVariable(eventInfo.eventPlayer, OnPointPlayerVar), 0);
+  SetScoreUI(eventInfo.eventPlayer);
+}
+
+function OnPlayerExitCapturePoint_Remove_CapturePoint_UI(conditionState: any, eventInfo: any) {
+  let newState = OnPlayerExitCapturePoint_Remove_CapturePoint_UI_Condition(eventInfo);
+  if (!conditionState.update(newState)) {
+    return;
+  }
+  OnPlayerExitCapturePoint_Remove_CapturePoint_UI_Action(eventInfo);
+}
+
+function OnPlayerRequestingRespawn_Block_Respawn_Condition(eventInfo: any): boolean {
+let newState = mod.Not(mod.GetVariable(GameOngoingGlobalVar));
+return newState;
+}
+async function OnPlayerRequestingRespawn_Block_Respawn_Action(eventInfo: any) {
+ await mod.Wait(0.1)
+ // Note: BlockRespawn function does not exist in current API
+ // Players will be restricted via EnableAllInputRestrictions instead
+ // mod.BlockRespawn(eventInfo.eventPlayer)
+}
+function OnPlayerRequestingRespawn_Block_Respawn(conditionState: any, eventInfo: any) {
+let newState = OnPlayerRequestingRespawn_Block_Respawn_Condition(eventInfo);
+if (!conditionState.update(newState)) {
+ return;
+}
+OnPlayerRequestingRespawn_Block_Respawn_Action(eventInfo);
+}
+
+function MakeTimeFromSeconds(seconds: number) {
+let minutes = mod.Floor(mod.Divide(
+mod.Divide(
+seconds,
+60),
+1));
+let hoursRemainder = mod.Modulo(
+seconds,
+60);
+let newSeconds = mod.Floor(mod.Modulo(
+hoursRemainder,
+60));
+ return mod.Message("{0}:{1}{2}", minutes,mod.IfThenElse(
+mod.LessThan(
+newSeconds,
+10),
+"0",""),newSeconds)
+}
+function EnemyTeam1_Setup() {
+ mod.AddUIImage("Team1Image",mod.CreateVector(-330,20,0),mod.CreateVector(250,60,0),mod.UIAnchor.TopLeft,mod.UIImageType.None)
+ mod.AddUIText("Team1Text",mod.CreateVector(-310,0,0),mod.CreateVector(200,200,0),mod.UIAnchor.TopLeft,mod.Message("TEAM 1"))
+ TeamUI_Setup("Team1Text",mod.GetVariable(EnemyTextColourGlobalVar),mod.GetVariable(EnemyBGColourGlobalVar),21,0.4)
+ mod.AddUIText("Team1Number",mod.CreateVector(-230,22,0),mod.CreateVector(200,200,0),mod.UIAnchor.TopLeft,mod.Message("ATTACKERS"))
+ TeamUI_Setup("Team1Number",mod.GetVariable(EnemyTextColourGlobalVar),mod.GetVariable(EnemyBGColourGlobalVar),18,0.4)
+}
+function FriendlyTeam2_Setup() {
+ mod.AddUIImage("Team2Image",mod.CreateVector(-330,90,0),mod.CreateVector(250,60,0),mod.UIAnchor.TopLeft,mod.UIImageType.None)
+ mod.AddUIText("Team2Text",mod.CreateVector(-310,70,0),mod.CreateVector(200,200,0),mod.UIAnchor.TopLeft,mod.Message("TEAM 2"))
+ TeamUI_Setup("Team2Text",mod.GetVariable(FriendlyTextColourGlobalVar),mod.GetVariable(FriendlyBGColourGlobalVar),21,0.4)
+ mod.AddUIText("Team2Number",mod.CreateVector(-230,92,0),mod.CreateVector(200,200,0),mod.UIAnchor.TopLeft,mod.Message("DEFENDERS"))
+ TeamUI_Setup("Team2Number",mod.GetVariable(FriendlyTextColourGlobalVar),mod.GetVariable(FriendlyBGColourGlobalVar),18,0.4)
+}
+function AppendToArray(value: any) {
+ mod.SetVariable(AppendGlobalVar,mod.AppendToArray(
+mod.GetVariable(AppendGlobalVar),
+value))
+}
+function ScoresUI() {
+ mod.SetVariable(PlayerUI_IDGlobalVar,mod.EmptyArray())
+ mod.SetVariable(AppendGlobalVar,mod.EmptyArray())
+ AppendToArray("Name")
+ AppendToArray("PT")
+ AppendToArray("OBJ")
+ AppendToArray("K/D")
+ AppendToArray("KA")
+ AppendToArray("RVV")
+ AppendToArray("#")
+ AppendToArray("1")
+ AppendToArray("2")
+ AppendToArray("3")
+ AppendToArray("4")
+ AppendToArray("5")
+ AppendToArray("6")
+ AppendToArray("7")
+ AppendToArray("8")
+ AppendToArray("9")
+ AppendToArray("10")
+ AppendToArray("11")
+ AppendToArray("12")
+ AppendToArray("13")
+ AppendToArray("14")
+ AppendToArray("15")
+ AppendToArray("16")
+ AppendToArray("17")
+ AppendToArray("18")
+ AppendToArray("19")
+ AppendToArray("20")
+ AppendToArray("21")
+ AppendToArray("22")
+ AppendToArray("23")
+ AppendToArray("24")
+ AppendToArray("25")
+ AppendToArray("26")
+ AppendToArray("27")
+ AppendToArray("28")
+ AppendToArray("29")
+ AppendToArray("30")
+ AppendToArray("31")
+ AppendToArray("32")
+ AppendToArray("33")
+ AppendToArray("34")
+ AppendToArray("35")
+ AppendToArray("36")
+ AppendToArray("37")
+ AppendToArray("38")
+ AppendToArray("39")
+ AppendToArray("40")
+ AppendToArray("41")
+ AppendToArray("42")
+ AppendToArray("43")
+ AppendToArray("44")
+ AppendToArray("45")
+ AppendToArray("46")
+ AppendToArray("47")
+ AppendToArray("48")
+ AppendToArray("49")
+ AppendToArray("50")
+ AppendToArray("51")
+ AppendToArray("52")
+ AppendToArray("53")
+ AppendToArray("54")
+ AppendToArray("55")
+ AppendToArray("56")
+ AppendToArray("57")
+ AppendToArray("58")
+ AppendToArray("59")
+ AppendToArray("60")
+ AppendToArray("61")
+ AppendToArray("62")
+ AppendToArray("63")
+ AppendToArray("64")
+ AppendToArray("###")
+ mod.SetVariable(PlayerUI_IDGlobalVar,mod.GetVariable(AppendGlobalVar))
+}
+function TeamUI_Setup(Name: string, TextColour: any, BackgroundColour: any, FontSize: number, Alpha: number) {
+
+
+ mod.SetUITextColor(mod.FindUIWidgetWithName(Name),TextColour)
+ mod.SetUIWidgetBgColor(mod.FindUIWidgetWithName(Name),BackgroundColour)
+ mod.SetUITextSize(mod.FindUIWidgetWithName(Name),FontSize)
+ mod.SetUIWidgetBgAlpha(mod.FindUIWidgetWithName(Name),Alpha)
+ mod.SetUIWidgetBgFill(mod.FindUIWidgetWithName(Name),mod.UIBgFill.Blur)
+}
+function PlayerUI_Outline() {
+
+
+ mod.SetVariable(PlayerUIOutlineGlobalVar,mod.EmptyArray())
+ mod.SetVariable(AppendGlobalVar,mod.EmptyArray())
+ AppendToArray("B1")
+ AppendToArray("B2")
+ AppendToArray("B3")
+ AppendToArray("B4")
+ AppendToArray("B5")
+ AppendToArray("B6")
+ AppendToArray("B7")
+ AppendToArray("B8")
+ AppendToArray("B9")
+ AppendToArray("B10")
+ AppendToArray("B11")
+ AppendToArray("B12")
+ AppendToArray("C12")
+ AppendToArray("B14")
+ AppendToArray("B15")
+ AppendToArray("C15")
+ AppendToArray("B17")
+ AppendToArray("D18")
+ AppendToArray("B19")
+ AppendToArray("B20")
+ AppendToArray("B21")
+ AppendToArray("B22")
+ AppendToArray("B23")
+ AppendToArray("B24")
+ AppendToArray("B25")
+ AppendToArray("B26")
+ AppendToArray("B27")
+ AppendToArray("B28")
+ AppendToArray("B29")
+ AppendToArray("B30")
+ AppendToArray("B31")
+ AppendToArray("B32")
+ AppendToArray("B33")
+ AppendToArray("B34")
+ AppendToArray("D35")
+ AppendToArray("B36")
+ AppendToArray("B37")
+ AppendToArray("B38")
+ AppendToArray("B39")
+ AppendToArray("B40")
+ AppendToArray("B41")
+ AppendToArray("B42")
+ AppendToArray("B43")
+ AppendToArray("B44")
+ AppendToArray("B45")
+ AppendToArray("B46")
+ AppendToArray("B47")
+ AppendToArray("B48")
+ AppendToArray("B49")
+ AppendToArray("B50")
+ AppendToArray("B51")
+ AppendToArray("B52")
+ AppendToArray("B53")
+ AppendToArray("B54")
+ AppendToArray("B55")
+ AppendToArray("B56")
+ AppendToArray("B57")
+ AppendToArray("B58")
+ AppendToArray("B59")
+ AppendToArray("B60")
+ AppendToArray("B61")
+ AppendToArray("B62")
+ AppendToArray("B63")
+ AppendToArray("B64")
+ AppendToArray("###")
+ mod.SetVariable(PlayerUIOutlineGlobalVar,mod.GetVariable(AppendGlobalVar))
+}
+function MainUI_ScoreandTime() {
+ // Create Match Timer at top center
+ mod.AddUIText("RemainingTime",mod.CreateVector(0,20,0),mod.CreateVector(250,60,0),mod.UIAnchor.TopCenter,mod.Message("5:00"))
+ 
+ let timerWidget = mod.FindUIWidgetWithName("RemainingTime");
+ mod.SetUITextSize(timerWidget, 48);
+ mod.SetUITextColor(timerWidget, mod.CreateVector(1, 1, 0));
+ mod.SetUIWidgetBgColor(timerWidget, mod.CreateVector(0, 0, 0));
+ mod.SetUIWidgetBgAlpha(timerWidget, 0.8);
+ mod.SetUIWidgetBgFill(timerWidget, mod.UIBgFill.Blur);
+ mod.SetUIWidgetDepth(timerWidget, mod.UIDepth.AboveGameUI);
+}
+// global vars
+const EnemyTextColourGlobalVar = mod.GlobalVariable(0)
+const PlayerUIOutlineGlobalVar = mod.GlobalVariable(1)
+const PlayerUI_IDGlobalVar = mod.GlobalVariable(2)
+const EnemyBGColourGlobalVar = mod.GlobalVariable(3)
+const FriendlyTextColourGlobalVar = mod.GlobalVariable(4)
+const GameOngoingGlobalVar = mod.GlobalVariable(5)
+const PlayersOnObjectiveGlobalVar = mod.GlobalVariable(6)
+const iteratorGlobalVar = mod.GlobalVariable(7)
+const FriendlyBGColourGlobalVar = mod.GlobalVariable(8)
+const AppendGlobalVar = mod.GlobalVariable(9)
+
+// player vars
+const CapturesPlayerVar = 0;
+const OnPointPlayerVar = 1;
+const KillAssistsPlayerVar = 2;
+const UI_IDTextPlayerVar = 3;
+const ScorePlayerVar = 4;
+const RevivesPlayerVar = 5;
+const UI_OutlinePlayerVar = 6;
+
+// team vars
+const TeamScoreTeamVar = 0;
+const OtherTeamTeamVar = 1;
+
+// capture point vars
+
+// mcom vars
+
+// vehicle vars
+
+export function OngoingGlobal() {
+const eventInfo = {};
+let eventNum = 0;
+  OngoingGlobal_Initialise(modlib.getGlobalCondition(eventNum++));
+  OngoingGlobal_Update_Score_and_Time(modlib.getGlobalCondition(eventNum++));
+  OngoingGlobal_Update_Score_and_Time1(modlib.getGlobalCondition(eventNum++));
+  OngoingGlobal_Monitor_Waiting_Phase(modlib.getGlobalCondition(eventNum++));
+}
+
+export function OnGameModeStarted() {
+const eventInfo = {};
+let eventNum = 5;
+  OnGameModeStarted_MapSetup(modlib.getGlobalCondition(eventNum++));
+}
+
+export function OnPlayerEarnedKill(eventPlayer: mod.Player, eventOtherPlayer: mod.Player, eventDeathType: mod.DeathType, eventWeaponUnlock: mod.WeaponUnlock) {
+const eventInfo = {eventPlayer, eventOtherPlayer, eventDeathType, eventWeaponUnlock};
+let eventNum = 0;
+  OnPlayerEarnedKill_Ean_Kill(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnPlayerEarnedKillAssist(eventPlayer: mod.Player, eventOtherPlayer: mod.Player) {
+const eventInfo = {eventPlayer, eventOtherPlayer};
+let eventNum = 1;
+  OnPlayerEarnedKillAssist_Kill_assist(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnRevived(eventPlayer: mod.Player, eventOtherPlayer: mod.Player) {
+const eventInfo = {eventPlayer, eventOtherPlayer};
+let eventNum = 2;
+  OnRevived_Revive_Counter(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnPlayerJoinGame(eventPlayer: mod.Player) {
+const eventInfo = {eventPlayer};
+let eventNum = 3;
+  OnPlayerJoinGame_Sets_Scoreboard(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnPlayerUndeploy(eventPlayer: mod.Player) {
+const eventInfo = {eventPlayer};
+let eventNum = 4;
+  OnPlayerUndeploy_Death_Update(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnCapturePointCaptured(eventCapturePoint: mod.CapturePoint) {
+const eventInfo = {eventCapturePoint};
+let eventNum = 0;
+  OnCapturePointCaptured_On_Capture(modlib.getCapturePointCondition(eventCapturePoint, eventNum++), eventInfo);
+}
+
+export function OnPlayerEnterCapturePoint(eventPlayer: mod.Player, eventCapturePoint: mod.CapturePoint) {
+const eventInfo = {eventPlayer, eventCapturePoint};
+let eventNum = 5;
+  OnPlayerEnterCapturePoint_Team1_Vehicle_Capture(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+  OnPlayerEnterCapturePoint_CapturePoint_UI(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnPlayerExitCapturePoint(eventPlayer: mod.Player, eventCapturePoint: mod.CapturePoint) {
+const eventInfo = {eventPlayer, eventCapturePoint};
+let eventNum = 7;
+  OnPlayerExitCapturePoint_Remove_CapturePoint_UI(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnPlayerDeploy(eventPlayer: mod.Player) {
+const eventInfo = {eventPlayer};
+let eventNum = 8;
+  OnPlayerDeploy_Restrict_Movement(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+
+export function OnPlayerDeploying(eventPlayer: mod.Player) {
+const eventInfo = {eventPlayer};
+let eventNum = 9;
+  OnPlayerRequestingRespawn_Block_Respawn(modlib.getPlayerCondition(eventPlayer, eventNum++), eventInfo);
+}
+function SetScoreUI(player: mod.Player) {
+ // Using the available SetScoreboardPlayerValues function
+ // The API provides: SetScoreboardPlayerValues(player, col1, col2, col3, col4, col5, col6)
+ 
+ // Get player stats
+ const score = mod.GetVariable(mod.ObjectVariable(player, ScorePlayerVar));
+ const captures = mod.GetVariable(mod.ObjectVariable(player, CapturesPlayerVar));
+ const kills = mod.GetPlayerKills(player);
+ const deaths = mod.GetPlayerDeaths(player);
+ const assists = mod.GetVariable(mod.ObjectVariable(player, KillAssistsPlayerVar));
+ const revives = mod.GetVariable(mod.ObjectVariable(player, RevivesPlayerVar));
+ 
+ // Set the scoreboard values for this player
+ mod.SetScoreboardPlayerValues(player, score, captures, kills, deaths, assists, revives);
+}
+function MakeKillDeathRatio(player: mod.Player) {
+ return mod.Message("{0}/{1}", mod.GetPlayerKills(player),mod.GetPlayerDeaths(player))
+}
+function ObjectiveCapturedPlayerData(player: mod.Player) {
+ mod.SetVariable(mod.ObjectVariable(player,CapturesPlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(player,CapturesPlayerVar)),
+1))
+ mod.SetVariable(mod.ObjectVariable(player,ScorePlayerVar),mod.Add(
+mod.GetVariable(mod.ObjectVariable(player,ScorePlayerVar)),
+20))
+ SetScoreUI(player)
+}
+function ObjectiveVehicleSpawn(CP: mod.CapturePoint) {
+ // Note: SpawnVehicleOnPoint and RuntimeSpawn_BFV do not exist in current API
+ // Alternative: Use vehicle spawner objects placed in the map editor instead
+ // or use mod.SpawnVehicle if available for your game mode
+ // mod.SpawnVehicleOnPoint(mod.RuntimeSpawn_BFV.LAV,2,0,mod.GetTeam(1))
+}
