@@ -429,7 +429,7 @@ async function OngoingGlobal_Update_Score_and_Time1_Action() {
    HideMatchTimer();
    mod.SetVariable(GameOngoingGlobalVar, false);  // Stop game
    customTimerStarted = false;  // Stop custom timer
-   mod.EndGameMode(); // No team specified = Draw
+   mod.EndGameMode(mod.GetTeam(0)); // No team specified = Draw
  }
 }
 function OngoingGlobal_Update_Score_and_Time1(conditionState: any) {
