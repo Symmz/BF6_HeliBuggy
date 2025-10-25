@@ -5,6 +5,10 @@ let baseGameStartCountdown: number = 15; // Countdown duration in seconds
 let gameStartCountdown: number = 15;
 let gameStartDebounce: boolean = false; // Prevents countdown from restarting once game has started
 
+// ===== CUSTOM MATCH TIMER =====
+let customMatchTimeRemaining: number = 300; // 5 minutes in seconds
+let customTimerStarted: boolean = false;
+
 // ===== HELPER FUNCTIONS =====
 function FormatTime(sec: number): [number, number, number] {
     const minutes = Math.floor(sec / 60);
@@ -33,11 +37,28 @@ function MakeMessage(message: string, ...args: any[]) {
     }
 }
 
+// Helper function to hide the timer UI
+function HideMatchTimer() {
+    const timerWidget = mod.FindUIWidgetWithName("RemainingTime");
+    mod.SetUIWidgetVisible(timerWidget, false);
+    console.log("Timer widget hidden");
+}
+
+// Helper function to format custom timer
+function FormatCustomTimer(seconds: number): mod.Message {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    const secsTens = Math.floor(secs / 10);
+    const secsOnes = secs % 10;
+    return mod.Message("{0}:{1}{2}", mins, secsTens, secsOnes);
+}
+
 // ===== PLAYER PROFILE CLASS =====
 class PlayerProfile {
     player: mod.Player;
-    playerHeaderWidget: mod.UIWidget;
-    playerSubHeaderWidget: mod.UIWidget;
+    playerWaitingHeaderWidget: mod.UIWidget;
+    playerWaitingSubHeaderWidget: mod.UIWidget;
+    playerCountdownWidget: mod.UIWidget;
     
     static playerInstances: mod.Player[] = [];
     static deployedPlayers: mod.Player[] = [];
@@ -47,8 +68,9 @@ class PlayerProfile {
     constructor(player: mod.Player) {
         console.log("Creating PlayerProfile for player: " + mod.GetObjId(player));
         this.player = player;
-        this.playerHeaderWidget = this.CreateHeaderUI();
-        this.playerSubHeaderWidget = this.CreateSubHeaderUI();
+        this.playerWaitingHeaderWidget = this.CreateWaitingHeaderUI();
+        this.playerWaitingSubHeaderWidget = this.CreateWaitingSubHeaderUI();
+        this.playerCountdownWidget = this.CreateCountdownUI();
         PlayerProfile.playerInstances.push(this.player);
         console.log("PlayerProfile created. Total instances: " + PlayerProfile.playerInstances.length);
     }
@@ -126,8 +148,8 @@ class PlayerProfile {
                 const element = this.playerInstances[i];
                 const playerProfile = this.Get(element);
                 if (playerProfile) {
-                    playerProfile.UpdateUI(playerProfile.playerHeaderWidget, undefined, false);
-                    playerProfile.UpdateUI(playerProfile.playerSubHeaderWidget, undefined, false);
+                    playerProfile.UpdateUI(playerProfile.playerWaitingHeaderWidget, undefined, false);
+                    playerProfile.UpdateUI(playerProfile.playerWaitingSubHeaderWidget, undefined, false);
                 }
             }
             
@@ -161,20 +183,10 @@ class PlayerProfile {
                     const element = this.playerInstances[i];
                     const playerProfile = this.Get(element);
                     if (playerProfile) {
-                        const formattedTime = FormatTime(gameStartCountdown);
+                        // FIXED: Display countdown as simple number (15, 14, 13, etc.)
                         playerProfile.UpdateUI(
-                            playerProfile.playerHeaderWidget,
-                            MakeMessage("Match Starting In..."),
-                            true
-                        );
-                        playerProfile.UpdateUI(
-                            playerProfile.playerSubHeaderWidget,
-                            MakeMessage(
-                                "{}:{}{}",
-                                formattedTime[0],
-                                formattedTime[1],
-                                formattedTime[2]
-                            ),
+                            playerProfile.playerCountdownWidget,
+                            mod.Message("{0}", gameStartCountdown),
                             true
                         );
                     }
@@ -193,6 +205,15 @@ class PlayerProfile {
                     console.log("Not enough deployed players on both teams (Team 1: " + currentTeam1Count + ", Team 2: " + currentTeam2Count + "), resetting countdown");
                     gameStartCountdown = baseGameStartCountdown;
                     this.whileLoopStarted = false;
+                    
+                    // Hide countdown widget and show waiting UI again
+                    for (let i = 0; i < this.playerInstances.length; i++) {
+                        const element = this.playerInstances[i];
+                        const playerProfile = this.Get(element);
+                        if (playerProfile) {
+                            playerProfile.UpdateUI(playerProfile.playerCountdownWidget, undefined, false);
+                        }
+                    }
                     break;
                 }
 
@@ -201,28 +222,39 @@ class PlayerProfile {
                     console.log("Countdown complete! Starting game...");
                     gameStartDebounce = true;
                     
-                    // Set game as ongoing and reset match timer to 5 minutes
+                    // FIXED: Set game as ongoing and START custom 5-minute timer
                     mod.SetVariable(GameOngoingGlobalVar, true);
-                    mod.SetGameModeTimeLimit(300);
+                    customMatchTimeRemaining = 300; // Reset to 5 minutes
+                    customTimerStarted = true; // Start the custom timer
+                    console.log("Custom 5-minute timer started!");
                     
-                    // Make timer visible and force an immediate update
+                    // Make timer visible
                     const timerWidget = mod.FindUIWidgetWithName("RemainingTime");
                     mod.SetUIWidgetVisible(timerWidget, true);
-                    mod.SetUITextLabel(timerWidget, mod.Message("5:00"));
-                    console.log("Timer widget made visible and set to 5:00");
+                    console.log("Timer widget made visible");
                     
-                    // Show GO message
+                    // Hide countdown widget
+                    for (let i = 0; i < this.playerInstances.length; i++) {
+                        const element = this.playerInstances[i];
+                        const playerProfile = this.Get(element);
+                        if (playerProfile) {
+                            playerProfile.UpdateUI(playerProfile.playerCountdownWidget, undefined, false);
+                        }
+                    }
+                    
+                    // Show GO message briefly
+                    await mod.Wait(0.5);
                     for (let i = 0; i < this.playerInstances.length; i++) {
                         const element = this.playerInstances[i];
                         const playerProfile = this.Get(element);
                         if (playerProfile) {
                             playerProfile.UpdateUI(
-                                playerProfile.playerHeaderWidget,
+                                playerProfile.playerWaitingHeaderWidget,
                                 MakeMessage("GO!"),
                                 true
                             );
                             playerProfile.UpdateUI(
-                                playerProfile.playerSubHeaderWidget,
+                                playerProfile.playerWaitingSubHeaderWidget,
                                 MakeMessage("Team 1 must reach the capture point!"),
                                 true
                             );
@@ -231,17 +263,17 @@ class PlayerProfile {
                     
                     await mod.Wait(3);
                     
-                    // Hide UI after game starts
+                    // Hide GO message after game starts
                     for (let i = 0; i < this.playerInstances.length; i++) {
                         const element = this.playerInstances[i];
                         const playerProfile = this.Get(element);
                         if (playerProfile) {
-                            playerProfile.UpdateUI(playerProfile.playerHeaderWidget, undefined, false);
-                            playerProfile.UpdateUI(playerProfile.playerSubHeaderWidget, undefined, false);
+                            playerProfile.UpdateUI(playerProfile.playerWaitingHeaderWidget, undefined, false);
+                            playerProfile.UpdateUI(playerProfile.playerWaitingSubHeaderWidget, undefined, false);
                         }
                     }
                     
-                    console.log("Match started! Timer should now be counting down.");
+                    console.log("Match started! Custom timer should now be counting down.");
                     break;
                 }
 
@@ -254,17 +286,17 @@ class PlayerProfile {
         }
     }
 
-    CreateHeaderUI(): mod.UIWidget {
+    CreateWaitingHeaderUI(): mod.UIWidget {
         mod.AddUIText(
-            "PlayerHeader_" + mod.GetObjId(this.player),
-            mod.CreateVector(0, -200, 0),
-            mod.CreateVector(600, 50, 0),
+            "PlayerWaitingHeader_" + mod.GetObjId(this.player),
+            mod.CreateVector(0, -250, 0),  // Moved higher up to -250
+            mod.CreateVector(800, 80, 0),
             mod.UIAnchor.Center,
             MakeMessage("Waiting for Players...")
         );
         
-        const widget = mod.FindUIWidgetWithName("PlayerHeader_" + mod.GetObjId(this.player));
-        mod.SetUITextSize(widget, 32);
+        const widget = mod.FindUIWidgetWithName("PlayerWaitingHeader_" + mod.GetObjId(this.player));
+        mod.SetUITextSize(widget, 48);
         mod.SetUITextColor(widget, mod.CreateVector(1, 1, 1));
         mod.SetUIWidgetBgColor(widget, mod.CreateVector(0, 0, 0));
         mod.SetUIWidgetBgAlpha(widget, 0.7);
@@ -274,22 +306,43 @@ class PlayerProfile {
         return widget;
     }
 
-    CreateSubHeaderUI(): mod.UIWidget {
+    CreateWaitingSubHeaderUI(): mod.UIWidget {
         mod.AddUIText(
-            "PlayerSubHeader_" + mod.GetObjId(this.player),
-            mod.CreateVector(0, -150, 0),
-            mod.CreateVector(400, 40, 0),
+            "PlayerWaitingSubHeader_" + mod.GetObjId(this.player),
+            mod.CreateVector(0, -180, 0),  // Moved higher up to -180
+            mod.CreateVector(600, 60, 0),
             mod.UIAnchor.Center,
             MakeMessage("")
         );
         
-        const widget = mod.FindUIWidgetWithName("PlayerSubHeader_" + mod.GetObjId(this.player));
-        mod.SetUITextSize(widget, 24);
+        const widget = mod.FindUIWidgetWithName("PlayerWaitingSubHeader_" + mod.GetObjId(this.player));
+        mod.SetUITextSize(widget, 36);
         mod.SetUITextColor(widget, mod.CreateVector(0.8, 0.8, 0.8));
         mod.SetUIWidgetBgColor(widget, mod.CreateVector(0, 0, 0));
         mod.SetUIWidgetBgAlpha(widget, 0.7);
         mod.SetUIWidgetBgFill(widget, mod.UIBgFill.Blur);
         mod.SetUIWidgetDepth(widget, mod.UIDepth.AboveGameUI);
+        
+        return widget;
+    }
+
+    CreateCountdownUI(): mod.UIWidget {
+        mod.AddUIText(
+            "PlayerCountdown_" + mod.GetObjId(this.player),
+            mod.CreateVector(0, -100, 0),  // Separate position at -100
+            mod.CreateVector(400, 120, 0),  // Larger size for countdown number
+            mod.UIAnchor.Center,
+            MakeMessage("")
+        );
+        
+        const widget = mod.FindUIWidgetWithName("PlayerCountdown_" + mod.GetObjId(this.player));
+        mod.SetUITextSize(widget, 72);  // Much larger text for countdown
+        mod.SetUITextColor(widget, mod.CreateVector(1, 0.8, 0));  // Gold/yellow color
+        mod.SetUIWidgetBgColor(widget, mod.CreateVector(0, 0, 0));
+        mod.SetUIWidgetBgAlpha(widget, 0.8);
+        mod.SetUIWidgetBgFill(widget, mod.UIBgFill.Blur);
+        mod.SetUIWidgetDepth(widget, mod.UIDepth.AboveGameUI);
+        mod.SetUIWidgetVisible(widget, false);  // Start hidden
         
         return widget;
     }
@@ -337,17 +390,22 @@ let newState = true;
 return newState;
 }
 async function OngoingGlobal_Update_Score_and_Time_Action() {
- // Continuously update the timer every second
+ // FIXED: Continuously update the CUSTOM timer every second
  while (true) {
    await mod.Wait(1);
    
-   // Only update if game is ongoing
-   if (mod.GetVariable(GameOngoingGlobalVar)) {
+   // Only update if game is ongoing and custom timer has started
+   if (mod.GetVariable(GameOngoingGlobalVar) && customTimerStarted) {
+     // Decrement custom timer
+     if (customMatchTimeRemaining > 0) {
+       customMatchTimeRemaining--;
+     }
+     
+     // Update UI with custom timer
      let RemainingTimeWidget = mod.FindUIWidgetWithName("RemainingTime");
-     const timeRemaining = mod.GetMatchTimeRemaining();
-     const timeString = MakeTimeFromSeconds(timeRemaining);
-     mod.SetUITextLabel(RemainingTimeWidget, MakeMessage("{}", timeString));
-     console.log("Timer updated: " + timeString + " (" + timeRemaining + " seconds remaining)");
+     const timeString = FormatCustomTimer(customMatchTimeRemaining);
+     mod.SetUITextLabel(RemainingTimeWidget, timeString);
+     console.log("Custom timer updated to: " + customMatchTimeRemaining + " seconds remaining");
    }
  }
 }
@@ -365,8 +423,13 @@ return newState;
 }
 async function OngoingGlobal_Update_Score_and_Time1_Action() {
  await mod.Wait(1)
- if (mod.GetMatchTimeRemaining() <= 0) {
- mod.EndGameMode(mod.GetTeam(2))
+ // FIXED: Check CUSTOM timer for draw condition
+ if (customTimerStarted && customMatchTimeRemaining <= 0) {
+   console.log("Custom timer ran out - Match ends in a DRAW");
+   HideMatchTimer();
+   mod.SetVariable(GameOngoingGlobalVar, false);  // Stop game
+   customTimerStarted = false;  // Stop custom timer
+   mod.EndGameMode(); // No team specified = Draw
  }
 }
 function OngoingGlobal_Update_Score_and_Time1(conditionState: any) {
@@ -415,32 +478,35 @@ function CheckAndUpdateWaitingState() {
   
   console.log("Team 1 DEPLOYED players: " + team1Count + ", Team 2 DEPLOYED players: " + team2Count);
   
-  // Ensure all players have profiles and show them waiting UI
-  for (let i = 0; i < mod.CountOf(allPlayers); i++) {
-    const player = mod.ValueInArray(allPlayers, i);
-    
-    // Create profile if needed
-    const playerProfile = PlayerProfile.Get(player);
-    
-    // Only show UI to alive players
-    if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
-      console.log("Showing waiting UI to player: " + mod.GetObjId(player));
+  // Only show waiting UI if countdown hasn't started yet
+  if (!PlayerProfile.whileLoopStarted && !gameStartDebounce) {
+    // Ensure all players have profiles and show them waiting UI
+    for (let i = 0; i < mod.CountOf(allPlayers); i++) {
+      const player = mod.ValueInArray(allPlayers, i);
       
-      if (playerProfile) {
-        playerProfile.UpdateUI(
-          playerProfile.playerHeaderWidget,
-          MakeMessage("Waiting for Players..."),
-          true
-        );
-        playerProfile.UpdateUI(
-          playerProfile.playerSubHeaderWidget,
-          MakeMessage(
-            "Team 1: {} | Team 2: {}",
-            team1Count,
-            team2Count
-          ),
-          true
-        );
+      // Create profile if needed
+      const playerProfile = PlayerProfile.Get(player);
+      
+      // Only show UI to alive players
+      if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) {
+        console.log("Showing waiting UI to player: " + mod.GetObjId(player));
+        
+        if (playerProfile) {
+          playerProfile.UpdateUI(
+            playerProfile.playerWaitingHeaderWidget,
+            MakeMessage("Waiting for Players..."),
+            true
+          );
+          playerProfile.UpdateUI(
+            playerProfile.playerWaitingSubHeaderWidget,
+            MakeMessage(
+              "Team 1: {} | Team 2: {}",
+              team1Count,
+              team2Count
+            ),
+            true
+          );
+        }
       }
     }
   }
@@ -527,13 +593,20 @@ async function OngoingGlobal_Check_Team_Elimination_Action() {
       
       console.log("Team Elimination Check - Team 1 Alive: " + team1AliveCount + ", Team 2 Alive: " + team2AliveCount);
       
+      // FIXED: Hide timer before ending game for team elimination
       // Check if either team has been eliminated
       if (team1AliveCount === 0 && team2AliveCount > 0) {
         console.log("Team 1 eliminated! Team 2 wins!");
+        HideMatchTimer();
+        mod.SetVariable(GameOngoingGlobalVar, false);
+        customTimerStarted = false;
         mod.EndGameMode(mod.GetTeam(2));
         break;
       } else if (team2AliveCount === 0 && team1AliveCount > 0) {
         console.log("Team 2 eliminated! Team 1 wins!");
+        HideMatchTimer();
+        mod.SetVariable(GameOngoingGlobalVar, false);
+        customTimerStarted = false;
         mod.EndGameMode(mod.GetTeam(1));
         break;
       }
@@ -710,7 +783,11 @@ async function OnPlayerEnterCapturePoint_Team1_Vehicle_Capture_Action(eventInfo:
   
   console.log("Team 1 player entered capture point in vehicle!");
   
+  // FIXED: Hide timer before ending game
   // Team 1 wins by capturing with vehicle
+  HideMatchTimer();
+  mod.SetVariable(GameOngoingGlobalVar, false);
+  customTimerStarted = false;
   mod.EndGameMode(mod.GetTeam(1));
 }
 
@@ -779,22 +856,18 @@ OnPlayerRequestingRespawn_Block_Respawn_Action(eventInfo);
 }
 
 function MakeTimeFromSeconds(seconds: number) {
-let minutes = mod.Floor(mod.Divide(
-mod.Divide(
-seconds,
-60),
-1));
-let hoursRemainder = mod.Modulo(
-seconds,
-60);
-let newSeconds = mod.Floor(mod.Modulo(
-hoursRemainder,
-60));
- return mod.Message("{0}:{1}{2}", minutes,mod.IfThenElse(
-mod.LessThan(
-newSeconds,
-10),
-"0",""),newSeconds)
+    // Calculate minutes (divide by 60)
+    let minutes = mod.Floor(mod.Divide(seconds, 60));
+    
+    // Calculate remaining seconds (modulo 60) and floor to remove decimals
+    let remainingSeconds = mod.Floor(mod.Modulo(seconds, 60));
+    
+    // Split seconds into tens digit (0-5) and ones digit (0-9) like FormatTime does
+    let secondsTens = mod.Floor(mod.Divide(remainingSeconds, 10));
+    let secondsOnes = mod.Modulo(remainingSeconds, 10);
+    
+    // Return formatted string (e.g., "5:09" or "4:32")
+    return mod.Message("{0}:{1}{2}", minutes, secondsTens, secondsOnes);
 }
 function EnemyTeam1_Setup() {
  mod.AddUIImage("Team1Image",mod.CreateVector(-330,20,0),mod.CreateVector(250,60,0),mod.UIAnchor.TopLeft,mod.UIImageType.None)
